@@ -1,0 +1,49 @@
+version: "3.1"
+
+session_config:
+  session_expiration_time: 60
+  carry_over_slots_to_new_session: true
+
+slots:
+  game_state:
+    type: any
+    mappings:
+      - type: controlled
+  guess:
+    type: text
+    mappings:
+      - type: from_llm
+  guess_number:
+    type: float
+    mappings:
+      - type: from_llm
+  letter_position:
+    type: float
+    mappings:
+      - type: from_llm
+
+actions:
+  - action_new_game
+  - action_submit_guess
+  - action_get_hint
+  - action_explain_letter
+  - action_give_up
+  - action_read_board
+  - action_count_candidates
+  - action_handle_free_text
+
+responses:
+  utter_welcome:
+    - text: "Welcome to Wordle for Everyone! I'm thinking of a common five letter word, and you have 6 guesses to find it. There's no timer, so take all the time you need. Say how to play anytime for the rules."
+
+  utter_ask_guess:
+    - text: "What five letter word would you like to try? You can type it or spell it out, like C R A N E."
+
+  utter_ask_guess_number:
+    - text: "Which guess should I explain? Say a number, like 1 for your first guess."
+
+  utter_ask_letter_position:
+    - text: "Which letter in that guess? Say a number from 1 to 5, counting from the left."
+
+  utter_how_to_play:
+    - text: "Here's how to play. I'm thinking of a common five letter word, and you have 6 guesses. After each guess I'll tell you about every letter. Right spot means the letter is in the word and in the right place. Wrong spot means the letter is in the word but somewhere else. Not in the word means you can rule that letter out. Words that aren't real or aren't five letters never use up a guess, and there's no timer. You can say hint, read my guesses, explain a letter, how many words are left, I give up, or new game at any time."

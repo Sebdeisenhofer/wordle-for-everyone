@@ -1,0 +1,84 @@
+flows:
+  pattern_session_start:
+    description: Greets the player and starts the first game when they open the chat.
+    name: pattern session start
+    steps:
+      - action: utter_welcome
+      - action: action_new_game
+
+  start_new_game:
+    description: Start a new Wordle game or play again with a new word.
+    steps:
+      - action: action_new_game
+
+  make_guess:
+    description: The player guesses a word. Any message that is a single word, or letters spelled out one at a time, is a guess.
+    steps:
+      - collect: guess
+        description: The word the player is guessing. If they spelled it out letter by letter, join the letters into one word.
+      - action: action_submit_guess
+
+  get_hint:
+    description: The player asks for a hint or a clue, or says they are stuck.
+    steps:
+      - action: action_get_hint
+
+  explain_letter:
+    description: The player asks why a letter got its result, for example why is the second letter of guess 2 marked wrong spot.
+    steps:
+      - collect: guess_number
+        description: Which guess the player is asking about, as a number starting from 1.
+      - collect: letter_position
+        description: Which letter position in that guess, a number from 1 to 5 counting from the left.
+      - action: action_explain_letter
+
+  give_up:
+    description: The player wants to give up on this puzzle or see the answer.
+    steps:
+      - action: action_give_up
+
+  read_board:
+    description: The player asks to hear or repeat their guesses so far, or asks what they have already tried.
+    steps:
+      - action: action_read_board
+
+  count_words_left:
+    description: The player asks how many possible words are left that still fit the clues.
+    steps:
+      - action: action_count_candidates
+
+  how_to_play:
+    description: The player asks how to play, what the rules are, what the results mean, or asks for help.
+    steps:
+      - action: utter_how_to_play
+
+  pattern_chitchat:
+    description: Handles messages that are not clearly a request.
+    name: pattern chitchat
+    steps:
+      - action: action_handle_free_text
+
+  pattern_cannot_handle:
+    description: Handles messages the assistant could not interpret.
+    name: pattern cannot handle
+    steps:
+      - action: action_handle_free_text
+
+  pattern_search:
+    description: Handles questions outside the game.
+    name: pattern search
+    steps:
+      - action: action_handle_free_text
+
+  pattern_clarification:
+    description: Handles messages that could match more than one thing.
+    name: pattern clarification
+    steps:
+      - action: action_handle_free_text
+
+  pattern_completed:
+    description: Ends a finished request quietly, without asking if there is anything else.
+    name: pattern completed
+    steps:
+      - noop: true
+        next: END
