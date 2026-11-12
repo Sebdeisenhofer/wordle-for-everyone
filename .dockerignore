@@ -1,0 +1,6 @@
+.venv
+.rasa
+models
+.env
+__pycache__
+.git

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wordle for Everyone</title>
+<style>
+  :root {
+    --bg: #f6f7f2;
+    --text: #26332d;
+    --panel: #edf1e8;
+    --line: #42584a;
+    --focus: #256d55;
+    --accent: #2f654f;
+    --correct-bg: #1e6b2e; --correct-fg: #ffffff;
+    --present-bg: #f2c037; --present-fg: #111111;
+    --absent-bg:  #5a5a5a; --absent-fg:  #ffffff;
+  }
+  body[data-palette="colorblind"] {
+    --correct-bg: #0b4f8a; --correct-fg: #ffffff;
+    --present-bg: #f0a030; --present-fg: #111111;
+  }
+  body[data-palette="contrast"] {
+    --correct-bg: #000000; --correct-fg: #ffffff;
+    --present-bg: #ffffff; --present-fg: #000000;
+    --absent-bg:  #d9d9d9; --absent-fg:  #000000;
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 20px; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: Verdana, Arial, sans-serif; line-height: 1.5; }
+  main { max-width: 40rem; margin: 1rem auto; padding: 1.25rem; background: #ffffff; border: 1px solid #dfe5da; border-radius: 0.8rem; box-shadow: 0 0.4rem 1.4rem rgba(38, 51, 45, 0.08); }
+  h1 { color: var(--accent); font-size: 1.6rem; margin: 0.2rem 0 0.4rem; }
+  h2 { color: var(--accent); font-size: 1.1rem; margin: 1rem 0 0.4rem; }
+  p { margin: 0.3rem 0; }
+  :focus-visible { outline: 4px solid var(--focus); outline-offset: 3px; }
+  button, select, input { font: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .btn { min-height: 2.6rem; min-width: 2.6rem; padding: 0.4rem 0.8rem; border: 2px solid var(--accent); border-radius: 0.4rem; background: var(--accent); color: #ffffff; cursor: pointer; }
+  .btn.light { background: #ffffff; color: var(--accent); }
+  .btn[aria-pressed="true"] { background: #256d55; color: #ffffff; }
+  #message { font-size: 1.15rem; background: var(--panel); border: 2px solid var(--line); border-radius: 0.5rem; padding: 0.8rem 1rem; min-height: 4.6rem; margin: 0.8rem 0; }
+  .tip { font-size: 0.9rem; text-align: center; }
+  #status { font-weight: bold; text-align: center; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.2rem; list-style: none; padding: 0; margin: 0.5rem 0; }
+  .legend li { display: flex; align-items: center; gap: 0.4rem; }
+  .legend .tile { width: 2.2rem; height: 2.2rem; font-size: 1rem; }
+  #board { display: grid; gap: 0.35rem; margin: 0.8rem 0; justify-content: center; }
+  .row { display: flex; gap: 0.35rem; }
+  .tile { position: relative; width: var(--tile, 3.2rem); height: var(--tile, 3.2rem); display: flex; align-items: center; justify-content: center; font-size: 1.6rem; font-weight: bold; padding: 0; border: 3px solid #767676; border-radius: 0.3rem; background: #ffffff; color: #111111; }
+  .tile .sym, .key .sym { position: absolute; top: 1px; right: 4px; font-size: 0.7rem; line-height: 1; }
+  .tile.typing { border-color: var(--line); }
+  .correct { background: var(--correct-bg) !important; color: var(--correct-fg) !important; border: 3px solid var(--line) !important; }
+  .present { background: var(--present-bg) !important; color: var(--present-fg) !important; border: 3px dashed var(--line) !important; }
+  .absent  { background: var(--absent-bg) !important;  color: var(--absent-fg) !important;  border: 3px dotted var(--line) !important; }
+  button.tile { cursor: pointer; }
+  .entry { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+  .entry label { width: 100%; font-weight: bold; }
+  #guess { flex: 1 1 8rem; min-height: 2.6rem; padding: 0.3rem 0.6rem; border: 2px solid var(--line); border-radius: 0.4rem; font-size: 1.3rem; letter-spacing: 0.3rem; text-transform: uppercase; }
+  #keyboard { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.8rem 0; }
+  .krow { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: center; }
+  .key { position: relative; min-width: 2.3rem; height: 2.8rem; padding: 0 0.4rem; font-size: 1.05rem; font-weight: bold; cursor: pointer; border: 2px solid var(--line); border-radius: 0.35rem; background: #e8e8e8; color: #111111; }
+  .key.wide { min-width: 4.8rem; }
+  /* Keys share each row evenly, so a row never breaks onto a second line */
+  .krow { flex-wrap: nowrap; }
+  .key { flex: 1 1 0; min-width: 0; max-width: 3.2rem; padding: 0; }
+  .key.wide { flex-grow: 1.9; min-width: 0; max-width: 6rem; font-size: 0.85rem; }
+  .tools { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  details { margin-top: 1rem; border: 2px solid var(--line); border-radius: 0.5rem; padding: 0.5rem 0.8rem; }
+  summary { cursor: pointer; font-weight: bold; min-height: 2.2rem; }
+  .setting { margin: 0.6rem 0; }
+  .setting label { display: block; font-weight: bold; }
+  .setting select { min-height: 2.4rem; border: 2px solid var(--line); border-radius: 0.3rem; }
+  #log { padding-left: 1.2rem; }
+  #log li { margin: 0.3rem 0; }
+  /* Laptop and desktop: board on the left, guessing and help on the right,
+     so the board, keyboard and messages all fit without scrolling. */
+  @media (min-width: 1000px) {
+    main { max-width: 76rem; margin: 0.75rem auto; padding: 1rem 2rem 1.25rem; }
+    .top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 2rem; border-bottom: 2px solid #e3e8df; padding-bottom: 0.6rem; }
+    .top h1 { margin: 0; }
+    .key-guide { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 1rem; }
+    .key-guide h2 { margin: 0; font-size: 1rem; }
+    .play { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2.5rem; align-items: start; margin-top: 0.8rem; }
+    /* Tiles grow to fill the screen height, but never so big that the board needs scrolling */
+    .board-col { --tile: clamp(2.2rem, calc((100vh - 12rem) / 7.6), 4.2rem); }
+    .board-col .tile { font-size: calc(var(--tile) * 0.5); }
+    /* Keep the tip as wide as the board, so the keyboard gets the rest of the room */
+    .board-col .tip { max-width: calc(var(--tile) * 5 + 1.4rem); margin-inline: auto; }
+    #board { margin-top: 0; }
+    .entry { margin-top: 0; }
+    .krow { flex-wrap: nowrap; gap: 0.4rem; }
+    .key { flex: 1 1 0; min-width: 0; max-width: 3.6rem; height: 3.5rem; font-size: 1.3rem; }
+    .key.wide { flex-grow: 2; max-width: 7rem; min-width: 0; font-size: 1.1rem; }
+    #keyboard { gap: 0.45rem; }
+    .controls h2 { margin-top: 0.4rem; }
+    .extras { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+  }
+  @media (max-width: 42rem) {
+    main { margin: 0; min-height: 100vh; padding: 0.8rem; border: 0; border-radius: 0; }
+  }
+</style>
+</head>
+<body data-palette="classic">
+<main>
+  <header class="top">
+    <div class="intro">
+      <h1>Wordle for Everyone</h1>
+      <p>Find the hidden five letter word. You have 6 guesses and there is no timer.</p>
+    </div>
+    <div class="key-guide">
+      <h2 id="legend-title">What the results mean</h2>
+      <ul class="legend" aria-labelledby="legend-title">
+        <li><span class="tile correct" aria-hidden="true">A<span class="sym">✓</span></span> ✓ Right spot</li>
+        <li><span class="tile present" aria-hidden="true">B<span class="sym">↔</span></span> ↔ In the word, wrong spot</li>
+        <li><span class="tile absent" aria-hidden="true">C<span class="sym">✕</span></span> ✕ Not in the word</li>
+      </ul>
+    </div>
+  </header>
+
+  <div class="play">
+    <section class="board-col" aria-label="Your guesses">
+      <div id="board"></div>
+      <p id="status"></p>
+      <p class="tip">Tip: select any scored letter to hear why it got that result.</p>
+    </section>
+
+    <section class="controls" aria-label="Make a guess">
+      <form class="entry" id="entry-form" autocomplete="off">
+        <label for="guess">Type your guess, then press Enter</label>
+        <input id="guess" name="guess" maxlength="20" inputmode="text" autocapitalize="characters" spellcheck="false">
+        <button class="btn" type="submit">Submit guess</button>
+        <button class="btn light" type="button" id="mic">🎤 Say a guess</button>
+      </form>
+
+      <h2 class="sr-only">On screen keyboard</h2>
+      <div id="keyboard"></div>
+
+      <div id="message" role="status" aria-live="polite">Loading the game...</div>
+
+      <h2>Help</h2>
+      <div class="tools">
+        <button class="btn light" type="button" data-say="hint">Hint</button>
+        <button class="btn light" type="button" data-say="read my guesses">Read my guesses</button>
+        <button class="btn light" type="button" data-say="how many words are left">Words left</button>
+        <button class="btn light" type="button" data-say="how to play">How to play</button>
+        <button class="btn light" type="button" id="read-aloud" aria-pressed="false">🔊 Read aloud: Off</button>
+        <button class="btn light" type="button" id="give-up">I give up</button>
+        <button class="btn" type="button" id="new-game">New game</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="extras">
+    <details>
+      <summary>Display and sound settings</summary>
+      <div class="setting">
+        <label for="palette">Feedback style</label>
+        <select id="palette">
+          <option value="classic">Classic: green and yellow, with symbols</option>
+          <option value="colorblind">Colorblind friendly: blue and orange, with symbols</option>
+          <option value="contrast">High contrast: black and white, with symbols</option>
+        </select>
+      </div>
+      <div class="setting">
+        <label for="size">Text size</label>
+        <select id="size">
+          <option value="20">Normal</option>
+          <option value="24">Large</option>
+          <option value="28">Extra large</option>
+        </select>
+      </div>
+      <div class="setting">
+        <label for="rate">Reading speed</label>
+        <select id="rate">
+          <option value="0.75">Slow</option>
+          <option value="0.9">Relaxed</option>
+          <option value="1">Normal</option>
+        </select>
+      </div>
+    </details>
+
+    <details>
+      <summary>Conversation history</summary>
+      <ol id="log"></ol>
+    </details>
+  </div>
+</main>
+<script src="game.js"></script>
+</body>
+</html>

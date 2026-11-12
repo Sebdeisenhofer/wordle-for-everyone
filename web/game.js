@@ -1,0 +1,326 @@
+// The local app server runs the game engine directly; Rasa is optional.
+const GAME_API = "/api/game";
+
+const SYM = { correct: "✓", present: "↔", absent: "✕" };
+const LABEL = { correct: "right spot", present: "in the word, wrong spot", absent: "not in the word" };
+
+const COMMANDS = {
+  "hint": "hint",
+  "read my guesses": "read_board",
+  "how many words are left": "count_candidates",
+  "how to play": "how_to_play",
+  "I give up": "give_up",
+  "new game": "new_game"
+};
+
+// Saved settings (wrapped in try so the page works even if storage is blocked)
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+};
+const prefs = {
+  palette: store.get("wfe_palette", "classic"),
+  size: store.get("wfe_size", "20"),
+  rate: store.get("wfe_rate", "0.9"),
+  readAloud: store.get("wfe_read_aloud", "off") === "on"
+};
+
+let senderId = store.get("wfe_sender", null);
+if (!senderId) {
+  senderId = "player-" + Math.random().toString(36).slice(2, 10);
+  store.set("wfe_sender", senderId);
+}
+
+let game = null;
+let busy = false;
+const $ = (id) => document.getElementById(id);
+const input = $("guess");
+
+// ---------- Settings ----------
+function applyPrefs() {
+  document.body.dataset.palette = prefs.palette;
+  document.documentElement.style.fontSize = prefs.size + "px";
+  $("palette").value = prefs.palette;
+  $("size").value = prefs.size;
+  $("rate").value = prefs.rate;
+  const btn = $("read-aloud");
+  btn.setAttribute("aria-pressed", prefs.readAloud ? "true" : "false");
+  btn.textContent = prefs.readAloud ? "🔊 Read aloud: On" : "🔊 Read aloud: Off";
+}
+$("palette").addEventListener("change", (e) => { prefs.palette = e.target.value; store.set("wfe_palette", prefs.palette); applyPrefs(); });
+$("size").addEventListener("change", (e) => { prefs.size = e.target.value; store.set("wfe_size", prefs.size); applyPrefs(); });
+$("rate").addEventListener("change", (e) => { prefs.rate = e.target.value; store.set("wfe_rate", prefs.rate); applyPrefs(); });
+$("read-aloud").addEventListener("click", () => {
+  prefs.readAloud = !prefs.readAloud;
+  store.set("wfe_read_aloud", prefs.readAloud ? "on" : "off");
+  applyPrefs();
+  if (prefs.readAloud) speak("Read aloud is on.");
+  else if ("speechSynthesis" in window) speechSynthesis.cancel();
+});
+
+// ---------- Speaking and messages ----------
+function speak(text) {
+  if (!prefs.readAloud || !("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = parseFloat(prefs.rate);
+  u.lang = "en-US";
+  speechSynthesis.speak(u);
+}
+function addLog(who, text) {
+  const li = document.createElement("li");
+  li.textContent = who + ": " + text;
+  $("log").appendChild(li);
+}
+function say(text) {
+  $("message").textContent = text;
+  addLog("Game", text);
+  speak(text);
+}
+
+// ---------- Talking to the local game server ----------
+// options.display is what to show in the conversation history.
+async function send(action, options = {}) {
+  if (busy) {
+    $("message").textContent = "Still working on your last move. One moment please.";
+    return;
+  }
+  busy = true;
+  if (options.show !== false) addLog("You", options.display || text);
+  $("message").textContent = "One moment...";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await fetch(GAME_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sender: senderId, action, ...options.data }),
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error("Server said " + res.status);
+    const messages = await res.json();
+    const wasPlaying = game && game.status === "playing";
+    const texts = [];
+    for (const m of messages) {
+      if (m.custom && m.custom.wordle) game = m.custom.wordle;
+      if (m.text) texts.push(m.text);
+    }
+    renderBoard();
+    renderKeyboard();
+    say(texts.length ? texts.join(" ") : "Sorry, I didn't get an answer. Please try again.");
+    if (wasPlaying && game && game.status !== "playing") $("new-game").focus();
+  } catch (err) {
+    say("I couldn't reach the local game. Please start it with python3 server.py, then try again.");
+  } finally {
+    clearTimeout(timer);
+    busy = false;
+  }
+}
+function sendCommand(phrase) {
+  send(COMMANDS[phrase] || phrase, { display: phrase });
+}
+function sendGuess(word) {
+  send("guess", { display: word, data: { guess: word } });
+}
+
+// ---------- Board ----------
+function typedLetters() {
+  return input.value.toLowerCase().replace(/[^a-z]/g, "").slice(0, 5);
+}
+
+function renderBoard() {
+  const board = $("board");
+  board.innerHTML = "";
+  const max = game ? game.max_guesses : 6;
+  const guesses = game ? game.guesses : [];
+  const results = game ? game.results : [];
+  const playing = !game || game.status === "playing";
+
+  for (let r = 0; r < max; r++) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.setAttribute("role", "group");
+    const word = guesses[r];
+
+    if (word) {
+      row.setAttribute("aria-label", "Guess " + (r + 1) + ": " + word.toUpperCase());
+      for (let i = 0; i < 5; i++) {
+        const st = results[r][i];
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "tile " + st;
+        b.innerHTML = word[i].toUpperCase() + '<span class="sym" aria-hidden="true">' + SYM[st] + "</span>";
+        b.setAttribute("aria-label",
+          "Guess " + (r + 1) + ", letter " + (i + 1) + ": " + word[i].toUpperCase() +
+          ", " + LABEL[st] + ". Select to hear why.");
+        b.addEventListener("click", () => explain(r, i));
+        row.appendChild(b);
+      }
+    } else {
+      const isTypingRow = playing && r === guesses.length;
+      const letters = isTypingRow ? typedLetters() : "";
+      row.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < 5; i++) {
+        const t = document.createElement("div");
+        t.className = "tile" + (letters[i] ? " typing" : "");
+        t.textContent = letters[i] ? letters[i].toUpperCase() : "";
+        row.appendChild(t);
+      }
+    }
+    board.appendChild(row);
+  }
+
+  if (game) {
+    const left = game.guesses_left;
+    const hintsLeft = 3 - (game.hints_used || 0);
+    $("status").textContent = game.status === "playing"
+      ? "Guesses left: " + left + ".  Hints left: " + hintsLeft + "."
+      : "Game over. Select New game to play again.";
+  }
+}
+
+// "Why this result?" explainer, worked out from the scored guess
+function explain(r, i) {
+  const word = game.guesses[r], res = game.results[r];
+  const L = word[i].toUpperCase(), st = res[i];
+  let t = "In guess " + (r + 1) + ", letter " + (i + 1) + " is " + L + ". ";
+  if (st === "correct") {
+    t += "It is marked right spot because the word has " + L + " in exactly that position.";
+  } else if (st === "present") {
+    t += "It is marked wrong spot because the word has " + L + ", but somewhere else. Try moving it.";
+  } else {
+    const otherCounted = [...word].some((c, j) => j !== i && c === word[i] && res[j] !== "absent");
+    t += otherCounted
+      ? "It is marked not in the word because the word has fewer " + L + "s than your guess. Your other " + L + " already counted for it."
+      : "It is marked not in the word because the word has no " + L + ". You can rule it out.";
+  }
+  say(t);
+}
+
+// ---------- On screen keyboard ----------
+function renderKeyboard() {
+  const kb = $("keyboard");
+  kb.innerHTML = "";
+  const status = (game && game.letter_status) || {};
+  const rows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+  rows.forEach((letters, idx) => {
+    const row = document.createElement("div");
+    row.className = "krow";
+    if (idx === 2) row.appendChild(makeKey("Enter", "Submit guess", submitGuess, true));
+    for (const ch of letters) {
+      const st = status[ch.toLowerCase()];
+      const label = "Letter " + ch + (st ? ", " + LABEL[st] : "");
+      const key = makeKey(ch, label, () => addLetter(ch), false);
+      if (st) {
+        key.classList.add(st);
+        key.insertAdjacentHTML("beforeend", '<span class="sym" aria-hidden="true">' + SYM[st] + "</span>");
+      }
+      row.appendChild(key);
+    }
+    if (idx === 2) row.appendChild(makeKey("Delete", "Delete last letter", deleteLetter, true));
+    kb.appendChild(row);
+  });
+}
+function makeKey(text, label, onClick, wide) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "key" + (wide ? " wide" : "");
+  b.textContent = text;
+  b.setAttribute("aria-label", label);
+  b.addEventListener("click", onClick);
+  return b;
+}
+function addLetter(ch) {
+  if (typedLetters().length < 5) input.value = typedLetters() + ch.toLowerCase();
+  renderBoard();
+}
+function deleteLetter() {
+  input.value = typedLetters().slice(0, -1);
+  renderBoard();
+}
+
+// ---------- Guess entry ----------
+function submitGuess() {
+  const value = input.value.trim();
+  if (!value) {
+    say("Please type a five letter word first.");
+    input.focus();
+    return;
+  }
+  if (busy) {
+    $("message").textContent = "Still working on your last move. One moment please.";
+    return;
+  }
+  input.value = "";
+  renderBoard();
+  sendGuess(value);
+}
+$("entry-form").addEventListener("submit", (e) => { e.preventDefault(); submitGuess(); });
+// Keep the box in step with the board: letters only, at most 5, so Backspace
+// always removes a letter you can see.
+input.addEventListener("input", () => {
+  const letters = typedLetters();
+  if (input.value !== letters) input.value = letters;
+  renderBoard();
+});
+
+// ---------- Help buttons ----------
+document.querySelectorAll("[data-say]").forEach((b) =>
+  b.addEventListener("click", () => sendCommand(b.dataset.say)));
+$("new-game").addEventListener("click", () => sendCommand("new game"));
+$("give-up").addEventListener("click", () => {
+  if (confirm("Reveal the word and end this game?")) sendCommand("I give up");
+});
+
+// ---------- Voice input (speech recognition is used for guesses) ----------
+const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+$("mic").addEventListener("click", () => {
+  if (!Recognition) {
+    say("Voice input does not work in this browser. Please try Google Chrome, or type your guess.");
+    return;
+  }
+  const rec = new Recognition();
+  rec.lang = "en-US";
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  $("mic").textContent = "🎤 Listening...";
+  $("message").textContent = "Listening. Say a word, or spell it out one letter at a time.";
+  rec.onresult = (e) => sendGuess(e.results[0][0].transcript);
+  rec.onerror = () => say("I didn't hear anything. Select Say a guess to try again.");
+  rec.onend = () => { $("mic").textContent = "🎤 Say a guess"; };
+  rec.start();
+});
+
+// ---------- Physical keyboard anywhere on the page ----------
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t === input || t.tagName === "SELECT" || t.tagName === "SUMMARY") return;
+  const onGameArea = t === document.body || t.classList.contains("key") || t.classList.contains("tile");
+
+  if (/^[a-zA-Z]$/.test(e.key)) {
+    e.preventDefault();
+    addLetter(e.key.toUpperCase());
+  } else if (e.key === "Backspace") {
+    e.preventDefault();
+    deleteLetter();
+  } else if (e.key === "Enter" && (onGameArea || typedLetters().length > 0)) {
+    // If letters are typed, Enter always submits them, wherever the focus is
+    e.preventDefault();
+    submitGuess();
+  }
+});
+
+// ---------- Start ----------
+applyPrefs();
+renderBoard();
+renderKeyboard();
+if (store.get("wfe_started", "")) {
+  sendCommand("read my guesses");
+} else {
+  store.set("wfe_started", "1");
+  sendCommand("new game");
+}
+
+// After starting a new game, put the cursor back in the guess box
+$("new-game").addEventListener("click", () => input.focus());

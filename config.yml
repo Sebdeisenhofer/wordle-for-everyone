@@ -2,6 +2,7 @@ recipe: default.v1
 language: en
 assistant_id: hot-gymnast
 pipeline:
+- name: NLUCommandAdapter
 - name: CompactLLMCommandGenerator
   llm:
     model_group: rasa_command_generation_model
