@@ -274,21 +274,56 @@ $("give-up").addEventListener("click", () => {
 
 // ---------- Voice input (speech recognition is used for guesses) ----------
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const NO_VOICE =
+  "Voice input isn't available in this browser. On a phone, tap the guess box and use " +
+  "the microphone button on your keyboard. On a computer, use Google Chrome, Microsoft Edge or Safari.";
+// Say exactly what went wrong, so the player knows how to fix it
+const MIC_ERRORS = {
+  "not-allowed": "The microphone is blocked for this page. Select the icon next to the web address, " +
+    "allow the microphone, then select Say a guess again. You can also type your guess.",
+  "service-not-allowed": NO_VOICE,
+  "audio-capture": "I couldn't find a microphone on this device. Please type your guess instead.",
+  "network": "Voice input needs an internet connection. Please check the connection, or type your guess.",
+  "no-speech": "I didn't hear anything. Select Say a guess, then say your word clearly."
+};
+let listening = null;
+
 $("mic").addEventListener("click", () => {
   if (!Recognition) {
-    say("Voice input does not work in this browser. Please try Google Chrome, or type your guess.");
+    say(NO_VOICE);
+    input.focus();
+    return;
+  }
+  if (listening) {          // a second press stops listening
+    listening.stop();
     return;
   }
   const rec = new Recognition();
   rec.lang = "en-US";
   rec.interimResults = false;
-  rec.maxAlternatives = 1;
-  $("mic").textContent = "🎤 Listening...";
-  $("message").textContent = "Listening. Say a word, or spell it out one letter at a time.";
-  rec.onresult = (e) => sendGuess(e.results[0][0].transcript);
-  rec.onerror = () => say("I didn't hear anything. Select Say a guess to try again.");
-  rec.onend = () => { $("mic").textContent = "🎤 Say a guess"; };
-  rec.start();
+  rec.maxAlternatives = 5;
+  rec.onresult = (e) => {
+    // Send everything the browser thinks it heard; the game picks the real word
+    const heard = Array.from(e.results[0], (alt) => alt.transcript.trim()).filter(Boolean);
+    if (!heard.length) { say(MIC_ERRORS["no-speech"]); return; }
+    send("guess", { display: "🎤 " + heard[0], data: { guess: heard[0], guess_options: heard } });
+  };
+  rec.onerror = (e) => {
+    if (e.error === "aborted") return;
+    say(MIC_ERRORS[e.error] || "Voice input stopped. Please select Say a guess to try again, or type your guess.");
+  };
+  rec.onend = () => {
+    listening = null;
+    $("mic").textContent = "🎤 Say a guess";
+  };
+  try {
+    rec.start();
+    listening = rec;
+    $("mic").textContent = "🎤 Listening... (select to stop)";
+    $("message").textContent = "Listening. Say a word, or spell it out one letter at a time.";
+  } catch (err) {
+    say("Voice input could not start. Please try again, or type your guess.");
+  }
 });
 
 // ---------- Physical keyboard anywhere on the page ----------

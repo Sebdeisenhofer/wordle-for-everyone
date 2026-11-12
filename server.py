@@ -36,6 +36,25 @@ def _board_payload(state: Dict[str, Any], message: str) -> Dict[str, Any]:
     return public
 
 
+def pick_guess(payload: Dict[str, Any]) -> str:
+    """Choose the word to score.
+
+    Voice input sends several things the browser thinks it heard
+    ("guess_options"), often as sentences like "my guess is crane." Use the
+    first one that contains a real five letter word; otherwise fall back to
+    the first thing heard so the player gets a helpful message about it.
+    """
+    options = payload.get("guess_options")
+    if not isinstance(options, list) or not options:
+        options = [payload.get("guess", "")]
+    options = [str(o) for o in options[:10] if isinstance(o, str)] or [""]
+    for heard in options:
+        word = wd.extract_guess(heard) or heard
+        if wd.check_guess(word)[0]:
+            return word
+    return wd.extract_guess(options[0]) or options[0]
+
+
 def play_action(
     sender: str, action: str, payload: Dict[str, Any]
 ) -> Tuple[int, List[Dict[str, Any]]]:
@@ -54,7 +73,7 @@ def play_action(
         if action == "guess":
             if state["status"] != wd.PLAYING:
                 state = wd.new_game()
-            state, message, _ = wd.submit_guess(state, str(payload.get("guess", "")))
+            state, message, _ = wd.submit_guess(state, pick_guess(payload))
         elif action == "hint":
             state, message = wd.get_hint(state)
         elif action == "give_up":
