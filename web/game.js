@@ -286,16 +286,125 @@ const MIC_ERRORS = {
   "network": "Voice input needs an internet connection. Please check the connection, or type your guess.",
   "no-speech": "I didn't hear anything. Select Say a guess, then say your word clearly."
 };
-let listening = null;
+let listening = null;      // browser speech recognition in progress
+let recording = null;      // { stop() } while recording for the voice service
+const micBtn = $("mic");
+const MIC_LABEL = "🎤 Say a guess";
 
-$("mic").addEventListener("click", () => {
+function guessFromSpeech(heard) {
+  heard = heard.map((t) => t.trim()).filter(Boolean);
+  if (!heard.length) {
+    say("I didn't catch a word. Select Say a guess, then say your word clearly.");
+    return;
+  }
+  send("guess", { display: "🎤 " + heard[0], data: { guess: heard[0], guess_options: heard } });
+}
+
+// Main voice path: record with the microphone, then the game server turns the
+// recording into text. Works the same on phones and computers.
+async function recordGuess() {
+  const canRecord = navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder;
+  if (!canRecord) return browserSpeech();
+
+  // Create audio context during the click so phones allow it
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ctx = AudioCtx ? new AudioCtx() : null;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    if (ctx) ctx.close();
+    if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) say(MIC_ERRORS["not-allowed"]);
+    else if (err && err.name === "NotFoundError") say(MIC_ERRORS["audio-capture"]);
+    else say("The microphone could not start. Please try again, or type your guess.");
+    return;
+  }
+
+  const type = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg;codecs=opus"]
+    .find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+  const recorder = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+
+  // Stop by itself after the player stops talking (or after 8 seconds)
+  let heardVoice = false, quietSince = 0, timer = null;
+  const started = Date.now();
+  let analyser = null, levels = null;
+  if (ctx) {
+    try {
+      if (ctx.state === "suspended") ctx.resume();
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      levels = new Uint8Array(analyser.fftSize);
+      ctx.createMediaStreamSource(stream).connect(analyser);
+    } catch (e) { analyser = null; }
+  }
+  const finish = () => { if (recorder.state !== "inactive") recorder.stop(); };
+  timer = setInterval(() => {
+    const now = Date.now();
+    // Only trust the level meter while audio is actually running; otherwise
+    // record for a fixed time (or until the button is pressed again).
+    const metering = analyser && ctx.state === "running";
+    if (!metering && now - started > 6000) finish();
+    if (metering) {
+      analyser.getByteTimeDomainData(levels);
+      let peak = 0;
+      for (const v of levels) peak = Math.max(peak, Math.abs(v - 128));
+      if (peak > 12) {
+        heardVoice = true; quietSince = 0;
+        micBtn.textContent = "🎤 Hearing you... (select to stop)";
+      } else if (heardVoice) {
+        quietSince = quietSince || now;
+        if (now - quietSince > 1300) finish();
+      }
+    }
+    if (now - started > 8000) finish();
+  }, 100);
+
+  recording = { stop: finish };
+  micBtn.textContent = "🎤 Listening... (select to stop)";
+  $("message").textContent = "Listening. Say a word, or spell it out one letter at a time.";
+
+  recorder.onstop = async () => {
+    clearInterval(timer);
+    stream.getTracks().forEach((t) => t.stop());
+    if (ctx) ctx.close();
+    recording = null;
+    micBtn.textContent = MIC_LABEL;
+    const audio = new Blob(chunks, { type: recorder.mimeType || type || "audio/webm" });
+    $("message").textContent = "One moment, working out your word...";
+    try {
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": audio.type || "application/octet-stream" },
+        body: audio
+      });
+      if (res.status === 503) return browserSpeech();   // voice service not set up
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { say((data.error || "The voice service did not answer.") + " You can type your guess instead."); return; }
+      if (!data.transcript) {
+        say("I didn't hear a word. Check that your microphone is on, select Say a guess, and speak clearly.");
+        return;
+      }
+      guessFromSpeech([data.transcript]);
+    } catch (err) {
+      say(MIC_ERRORS["network"]);
+    }
+  };
+  recorder.start();
+}
+
+micBtn.addEventListener("click", () => {
+  if (recording) { recording.stop(); return; }   // a second press stops
+  if (listening) { listening.stop(); return; }
+  recordGuess();
+});
+
+// Fallback: the browser's own speech recognition
+function browserSpeech() {
   if (!Recognition) {
     say(NO_VOICE);
     input.focus();
-    return;
-  }
-  if (listening) {          // a second press stops listening
-    listening.stop();
     return;
   }
   const rec = new Recognition();
@@ -324,7 +433,7 @@ $("mic").addEventListener("click", () => {
   } catch (err) {
     say("Voice input could not start. Please try again, or type your guess.");
   }
-});
+}
 
 // ---------- Physical keyboard anywhere on the page ----------
 document.addEventListener("keydown", (e) => {

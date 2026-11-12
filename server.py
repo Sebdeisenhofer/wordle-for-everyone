@@ -6,6 +6,10 @@ No Rasa server or hosted language model is required.
 import argparse
 import json
 import os
+import threading
+import time
+import urllib.error
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -15,6 +19,62 @@ from actions import wordle_engine as wd
 
 PROJECT_DIR = Path(__file__).resolve().parent
 GAMES: Dict[str, Dict[str, Any]] = {}
+
+
+def _load_dotenv() -> None:
+    """For local runs: read KEY=value lines from .env without overriding real
+    environment variables. On a host, set the variables in its dashboard."""
+    env_file = PROJECT_DIR / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+_load_dotenv()
+
+# ---------- Voice: speech to text with Deepgram, key kept on the server ----------
+DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=en-US"
+MAX_AUDIO_BYTES = 3_000_000          # about a minute of compressed audio
+VOICE_LIMIT_PER_MINUTE = 20          # per visitor, so the key can't be abused
+_voice_hits: Dict[str, List[float]] = {}
+_voice_lock = threading.Lock()
+
+
+def voice_allowed(client: str) -> bool:
+    now = time.time()
+    with _voice_lock:
+        recent = [t for t in _voice_hits.get(client, []) if now - t < 60]
+        if len(recent) >= VOICE_LIMIT_PER_MINUTE:
+            _voice_hits[client] = recent
+            return False
+        recent.append(now)
+        _voice_hits[client] = recent
+        if len(_voice_hits) > 5000:   # forget old visitors
+            for k in [k for k, v in _voice_hits.items() if now - v[-1] > 60]:
+                del _voice_hits[k]
+        return True
+
+
+def transcribe(audio: bytes, content_type: str) -> str:
+    """Send recorded audio to Deepgram and return what it heard."""
+    request = urllib.request.Request(
+        DEEPGRAM_URL,
+        data=audio,
+        method="POST",
+        headers={
+            "Authorization": "Token " + os.environ["DEEPGRAM_API_KEY"],
+            "Content-Type": content_type or "application/octet-stream",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    alternatives = result["results"]["channels"][0]["alternatives"]
+    return alternatives[0]["transcript"].strip() if alternatives else ""
 
 HOW_TO_PLAY = (
     "Here's how to play. I'm thinking of a common five letter word, and you "
@@ -114,7 +174,11 @@ class GameHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/game":
+        path = urlparse(self.path).path
+        if path == "/api/transcribe":
+            self._transcribe()
+            return
+        if path != "/api/game":
             self.send_error(404)
             return
 
@@ -144,6 +208,33 @@ class GameHandler(SimpleHTTPRequestHandler):
 
         status, response = play_action(sender, action, request)
         self._send_json(status, response)
+
+    def _transcribe(self) -> None:
+        if not os.environ.get("DEEPGRAM_API_KEY"):
+            # The page then falls back to the browser's own speech recognition
+            self._send_json(503, {"error": "Voice service is not set up."})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_AUDIO_BYTES:
+            self._send_json(400, {"error": "The recording was empty or too long."})
+            return
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        client = forwarded.split(",")[0].strip() or self.client_address[0]
+        if not voice_allowed(client):
+            self.rfile.read(length)
+            self._send_json(429, {"error": "Too many voice guesses in a minute. Please wait a moment."})
+            return
+        audio = self.rfile.read(length)
+        try:
+            text = transcribe(audio, self.headers.get("Content-Type", ""))
+        except (urllib.error.URLError, TimeoutError, KeyError, IndexError, ValueError) as err:
+            self.log_error("Deepgram request failed: %s", err)
+            self._send_json(502, {"error": "The voice service did not answer."})
+            return
+        self._send_json(200, {"transcript": text})
 
     def _send_json(self, status: int, data: Any) -> None:
         body = json.dumps(data).encode("utf-8")
